@@ -1,0 +1,7 @@
+fastapi[standard]
+openai
+gTTS
+python-dotenv
+python-multipart
+faster-whisper
+av==18.1.0
