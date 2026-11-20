@@ -93,6 +93,8 @@ async def liveavatar_session():
         }
 
     except Exception as e:
+        print("LiveAvatar error:", str(e))
+
         raise HTTPException(
             status_code=500,
             detail=f"LiveAvatar session creation failed: {str(e)}"
@@ -120,9 +122,7 @@ async def transcribe(file: UploadFile = File(...)):
                 detail="Uploaded audio file is empty"
             )
 
-        transcript = transcribe_audio(
-            BytesIO(audio_data)
-        )
+        transcript = transcribe_audio(BytesIO(audio_data))
 
         return {
             "success": True,
@@ -133,6 +133,8 @@ async def transcribe(file: UploadFile = File(...)):
         raise
 
     except Exception as e:
+        print("Transcription error:", str(e))
+
         raise HTTPException(
             status_code=500,
             detail=f"Transcription failed: {str(e)}"
@@ -146,13 +148,25 @@ async def transcribe(file: UploadFile = File(...)):
 @app.post("/api/chat")
 async def chat(request: ChatRequest):
     try:
-        if not request.message.strip():
+        user_message = request.message.strip()
+
+        if not user_message:
             raise HTTPException(
                 status_code=400,
                 detail="Message cannot be empty"
             )
 
-        reply = generate_response(request.message)
+        print("User message:", user_message)
+
+        reply = generate_response(user_message)
+
+        if not reply:
+            raise HTTPException(
+                status_code=500,
+                detail="Groq returned an empty response."
+            )
+
+        print("AI response:", reply)
 
         return {
             "success": True,
@@ -163,6 +177,8 @@ async def chat(request: ChatRequest):
         raise
 
     except Exception as e:
+        print("AI response error:", repr(e))
+
         raise HTTPException(
             status_code=500,
             detail=f"AI response generation failed: {str(e)}"
@@ -171,7 +187,6 @@ async def chat(request: ChatRequest):
 
 # ==========================================
 # TEXT TO SPEECH - MP3
-# Existing browser audio playback
 # ==========================================
 
 @app.post("/api/speak")
@@ -197,6 +212,8 @@ async def speak(request: SpeechRequest):
         raise
 
     except Exception as e:
+        print("Speech generation error:", str(e))
+
         raise HTTPException(
             status_code=500,
             detail=f"Speech generation failed: {str(e)}"
@@ -205,8 +222,8 @@ async def speak(request: SpeechRequest):
 
 # ==========================================
 # TEXT TO SPEECH - PCM
-# HeyGen LiveAvatar lip-sync audio
-# Format: 24 kHz, mono, signed 16-bit PCM
+# HEYGEN LIP-SYNC AUDIO
+# 24 kHz, MONO, SIGNED 16-BIT PCM
 # ==========================================
 
 @app.post("/api/speak-pcm")
@@ -232,6 +249,8 @@ async def speak_pcm(request: SpeechRequest):
         raise
 
     except Exception as e:
+        print("PCM audio generation error:", str(e))
+
         raise HTTPException(
             status_code=500,
             detail=f"PCM audio generation failed: {str(e)}"

@@ -1,445 +1,254 @@
 
-import { useState, useRef, useEffect } from 'react'
+import { useCallback, useRef, useState } from 'react'
 import './App.css'
 import Avatar from './Avatar'
 
-function App() {
-  const [message, setMessage] = useState('')
+const BACKEND_URL = 'http://127.0.0.1:8000'
+
+export default function App() {
   const [messages, setMessages] = useState([])
+  const [message, setMessage] = useState('')
   const [loading, setLoading] = useState(false)
-  const [speaking, setSpeaking] = useState(false)
-  const [isRecording, setIsRecording] = useState(false)
+  const [avatarStatus, setAvatarStatus] = useState('Disconnected')
+  const [isListening, setIsListening] = useState(false)
+  const [isSpeaking, setIsSpeaking] = useState(false)
+  const [speakRequest, setSpeakRequest] = useState(null)
 
-  const recorderRef = useRef(null)
-  const streamRef = useRef(null)
-  const audioRef = useRef(null)
+  const requestIdRef = useRef(0)
+  const loadingRef = useRef(false)
 
-  useEffect(() => {
-    return () => {
-      if (recorderRef.current?.state === 'recording') {
-        recorderRef.current.stop()
+  const addMessage = (role, text) => {
+    setMessages(previous => [
+      ...previous,
+      {
+        id: `${Date.now()}-${Math.random()}`,
+        role,
+        text,
+        time: new Date().toLocaleTimeString([], {
+          hour: '2-digit',
+          minute: '2-digit'
+        })
       }
-
-      streamRef.current?.getTracks().forEach((track) => track.stop())
-
-      if (audioRef.current) {
-        audioRef.current.pause()
-      }
-    }
-  }, [])
-
-  // Send message to Groq AI
-  const sendMessage = async (userMessage) => {
-    const cleanMessage = userMessage.trim()
-
-    if (!cleanMessage || loading) return
-
-    setMessages((prev) => [
-      ...prev,
-      { role: 'user', text: cleanMessage }
     ])
+  }
 
-    setMessage('')
+  // Called by Avatar when it recognizes your speech.
+  // Typed messages also use this function, but request the avatar to speak.
+  const sendMessage = useCallback(async (userText, speakReply = false) => {
+    const cleanText = userText.trim()
+
+    if (!cleanText || loadingRef.current) return null
+
+    loadingRef.current = true
     setLoading(true)
+    addMessage('user', cleanText)
 
     try {
-      const response = await fetch(
-        'http://127.0.0.1:8000/api/chat',
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json'
-          },
-          body: JSON.stringify({
-            message: cleanMessage
-          })
-        }
-      )
+      const response = await fetch(`${BACKEND_URL}/api/chat`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          message: cleanText
+        })
+      })
+
+      if (!response.ok) {
+        throw new Error('Could not get a response from the AI.')
+      }
 
       const data = await response.json()
 
-      if (!response.ok || !data.success) {
-        throw new Error(
-          data.detail || data.error || 'AI response failed'
-        )
+      const reply =
+        data.ai_response ||
+        data.response ||
+        data.reply ||
+        data.message ||
+        'Sorry, I could not generate a response.'
+        
+      addMessage('assistant', reply)
+
+      if (speakReply) {
+        requestIdRef.current += 1
+        setSpeakRequest({
+          id: requestIdRef.current,
+          text: reply
+        })
       }
 
-      setMessages((prev) => [
-        ...prev,
-        {
-          role: 'assistant',
-          text: data.ai_response
-        }
-      ])
-
+      return reply
     } catch (error) {
       console.error('Chat error:', error)
-
-      setMessages((prev) => [
-        ...prev,
-        {
-          role: 'assistant',
-          text: 'Sorry, something went wrong: ' + error.message
-        }
-      ])
-
+      addMessage(
+        'assistant',
+        'Sorry, something went wrong while processing your message.'
+      )
+      return null
     } finally {
+      loadingRef.current = false
       setLoading(false)
     }
-  }
+  }, [])
 
-  // Handle text message
-  const handleSend = (event) => {
+  const handleTextSubmit = async (event) => {
     event.preventDefault()
 
-    if (!message.trim() || loading) return
+    const text = message.trim()
+    if (!text || loadingRef.current) return
 
-    sendMessage(message)
-  }
-
-  // Convert AI response into speech using gTTS
-  const handleSpeak = async (text) => {
-    if (speaking) return
-
-    setSpeaking(true)
-
-    try {
-      const response = await fetch(
-        'http://127.0.0.1:8000/api/speak',
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json'
-          },
-          body: JSON.stringify({ text })
-        }
-      )
-
-      if (!response.ok) {
-        throw new Error('Could not generate speech')
-      }
-
-      const audioBlob = await response.blob()
-      const audioUrl = URL.createObjectURL(audioBlob)
-
-      const audio = new Audio(audioUrl)
-      audioRef.current = audio
-
-      const cleanup = () => {
-        URL.revokeObjectURL(audioUrl)
-        audioRef.current = null
-        setSpeaking(false)
-      }
-
-      audio.onended = cleanup
-      audio.onerror = cleanup
-
-      await audio.play()
-
-    } catch (error) {
-      console.error('Speech error:', error)
-
-      alert('Unable to play audio: ' + error.message)
-
-      setSpeaking(false)
-    }
-  }
-
-  // Record microphone input
-  const handleVoiceInput = async () => {
-    if (isRecording || loading) return
-
-    try {
-      if (!navigator.mediaDevices?.getUserMedia) {
-        throw new Error(
-          'Microphone access is not supported by this browser.'
-        )
-      }
-
-      const stream =
-        await navigator.mediaDevices.getUserMedia({
-          audio: true
-        })
-
-      streamRef.current = stream
-
-      let mimeType = ''
-
-      if (
-        MediaRecorder.isTypeSupported(
-          'audio/webm;codecs=opus'
-        )
-      ) {
-        mimeType = 'audio/webm;codecs=opus'
-      } else if (
-        MediaRecorder.isTypeSupported('audio/webm')
-      ) {
-        mimeType = 'audio/webm'
-      } else if (
-        MediaRecorder.isTypeSupported('audio/mp4')
-      ) {
-        mimeType = 'audio/mp4'
-      }
-
-      const recorder = mimeType
-        ? new MediaRecorder(stream, { mimeType })
-        : new MediaRecorder(stream)
-
-      recorderRef.current = recorder
-
-      const audioChunks = []
-
-      recorder.ondataavailable = (event) => {
-        if (event.data.size > 0) {
-          audioChunks.push(event.data)
-        }
-      }
-
-      recorder.onstop = async () => {
-        setIsRecording(false)
-
-        stream.getTracks().forEach((track) => track.stop())
-
-        streamRef.current = null
-        recorderRef.current = null
-
-        const audioType = recorder.mimeType || 'audio/webm'
-
-        const audioBlob = new Blob(audioChunks, {
-          type: audioType
-        })
-
-        if (audioBlob.size === 0) {
-          alert('No audio was recorded. Please try again.')
-          return
-        }
-
-        let extension = 'webm'
-
-        if (audioType.includes('mp4')) {
-          extension = 'mp4'
-        } else if (audioType.includes('ogg')) {
-          extension = 'ogg'
-        }
-
-        const formData = new FormData()
-
-        formData.append(
-          'file',
-          audioBlob,
-          `recording.${extension}`
-        )
-
-        try {
-          const response = await fetch(
-            'http://127.0.0.1:8000/api/transcribe',
-            {
-              method: 'POST',
-              body: formData
-            }
-          )
-
-          const data = await response.json()
-
-          if (!response.ok || !data.success) {
-            throw new Error(
-              data.detail ||
-              data.error ||
-              'Transcription failed'
-            )
-          }
-
-          const recognizedText =
-            data.transcription?.trim()
-
-          if (!recognizedText) {
-            alert('No speech detected. Please try again.')
-            return
-          }
-
-          await sendMessage(recognizedText)
-
-        } catch (error) {
-          console.error('Transcription error:', error)
-
-          alert(
-            'Could not convert your voice into text: ' +
-            error.message
-          )
-        }
-      }
-
-      recorder.start()
-      setIsRecording(true)
-
-    } catch (error) {
-      console.error('Microphone error:', error)
-
-      streamRef.current?.getTracks().forEach(
-        (track) => track.stop()
-      )
-
-      streamRef.current = null
-
-      alert(
-        'Could not access microphone. Please allow microphone permission. ' +
-        error.message
-      )
-    }
-  }
-
-  // Stop microphone recording
-  const stopVoiceRecording = () => {
-    if (
-      recorderRef.current &&
-      recorderRef.current.state === 'recording'
-    ) {
-      recorderRef.current.stop()
-    }
+    setMessage('')
+    await sendMessage(text, true)
   }
 
   return (
     <div className="app">
-
-      {/* Header */}
-      <header className="header">
-
-        <div className="logo">
-          AI
+      <header className="app-header">
+        <div className="header-brand">
+          <div className="brand-icon">AI</div>
+          <div>
+            <h1>Real-Time AI Avatar</h1>
+            <p>Your intelligent virtual assistant</p>
+          </div>
         </div>
 
-        <div className="header-info">
-          <h1>My AI Assistant</h1>
-          <p>Your personal intelligent assistant</p>
+        <div className="connection-status">
+          <span
+            className={`status-dot ${
+              avatarStatus === 'Connected' ? 'online' : ''
+            }`}
+          />
+          {avatarStatus}
         </div>
-
-        <div className="status">
-          <span></span>
-          Online
-        </div>
-
       </header>
 
-      {/* Main Chat Container */}
-      <main className="chat-container">
-
-        {/* HeyGen LiveAvatar */}
-        <Avatar />
-
-        {/* Welcome Message */}
-        {messages.length === 0 && (
-          <div className="welcome">
-
-            <div className="avatar">
-              AI
+      <main className="main-layout">
+        {/* LEFT PANEL: AVATAR AND VOICE CONTROLS */}
+        <section className="avatar-column">
+          <div className="panel-heading">
+            <div>
+              <h2>Virtual Assistant</h2>
+              <p>Talk naturally with your AI assistant</p>
             </div>
-
-            <h2>Hello! Welcome 👋</h2>
-
-            <p>
-              I'm your AI assistant.
-              Ask me anything and I'll be happy to help you!
-            </p>
-
+            <span className="live-label">LIVE</span>
           </div>
-        )}
 
-        {/* Chat Messages */}
-        <div className="messages">
-
-          {messages.map((msg, index) => (
-            <div
-              key={index}
-              className={`message ${msg.role}`}
-            >
-
-              <div className="message-content">
-
-                <p>{msg.text}</p>
-
-                {msg.role === 'assistant' && (
-                  <button
-                    type="button"
-                    className="speak-button"
-                    onClick={() => handleSpeak(msg.text)}
-                    disabled={speaking}
-                  >
-                    {speaking
-                      ? '🔊 Playing...'
-                      : '🔊 Listen'}
-                  </button>
-                )}
-
-              </div>
-
-            </div>
-          ))}
-
-          {/* Loading Message */}
-          {loading && (
-            <div className="message assistant">
-
-              <div className="message-content">
-                <p>Thinking...</p>
-              </div>
-
-            </div>
-          )}
-
-        </div>
-
-        {/* Message Input */}
-        <form
-          className="input-area"
-          onSubmit={handleSend}
-        >
-
-          <input
-            type="text"
-            placeholder="Type your message here..."
-            value={message}
-            onChange={(event) =>
-              setMessage(event.target.value)
-            }
-            disabled={loading}
+          <Avatar
+            onTranscript={sendMessage}
+            speakRequest={speakRequest}
+            onListeningChange={setIsListening}
+            onSpeakingChange={setIsSpeaking}
+            onStatusChange={setAvatarStatus}
           />
 
-          {/* Microphone Button */}
-          <button
-            type="button"
-            className={`mic-button ${
-              isRecording ? 'recording' : ''
-            }`}
-            onClick={
-              isRecording
-                ? stopVoiceRecording
-                : handleVoiceInput
-            }
-            disabled={loading}
+          <div
+            className={`voice-indicator ${
+              isListening ? 'listening' : ''
+            } ${isSpeaking ? 'speaking' : ''}`}
           >
-            {isRecording ? '⏹ Stop' : '🎤 Mic'}
-          </button>
+            <div className="waveform" aria-label="Voice activity indicator">
+              {Array.from({ length: 25 }).map((_, index) => (
+                <span key={index} />
+              ))}
+            </div>
 
-          {/* Send Button */}
-          <button
-            type="submit"
-            className="send-button"
-            disabled={loading || !message.trim()}
-          >
-            {loading ? '...' : 'Send ➤'}
-          </button>
+            <p>
+              {isSpeaking
+                ? 'AI is speaking...'
+                : isListening
+                  ? 'Listening to you...'
+                  : 'Ready for conversation'}
+            </p>
+          </div>
+        </section>
 
-        </form>
+        {/* RIGHT PANEL: ONLY THE CONVERSATION */}
+        <section className="chat-container">
+          <div className="chat-header">
+            <div>
+              <h2>Conversation</h2>
+              <p>Your messages and AI responses</p>
+            </div>
+            <div className="message-count">
+              {messages.length} messages
+            </div>
+          </div>
 
-        {/* Footer */}
-        <p className="footer-text">
-          Powered by Groq AI, Whisper, gTTS and HeyGen
-        </p>
+          <div className="messages-container">
+            {messages.length === 0 ? (
+              <div className="empty-chat">
+                <div className="empty-chat-icon">✦</div>
+                <h3>Start a conversation</h3>
+                <p>
+                  Start the conversation using the microphone on the
+                  left, or type a message below.
+                </p>
+              </div>
+            ) : (
+              messages.map((item) => (
+                <div
+                  className={`message-row ${
+                    item.role === 'user' ? 'user-row' : 'assistant-row'
+                  }`}
+                  key={item.id}
+                >
+                  <div
+                    className={`message-avatar ${
+                      item.role === 'user' ? 'user-avatar' : 'ai-avatar'
+                    }`}
+                  >
+                    {item.role === 'user' ? 'You' : 'AI'}
+                  </div>
 
+                  <div className="message-content">
+                    <div className="message-name">
+                      {item.role === 'user' ? 'You' : 'AI Assistant'}
+                    </div>
+
+                    <div className="message-bubble">
+                      {item.text}
+                    </div>
+
+                    <span className="message-time">{item.time}</span>
+                  </div>
+                </div>
+              ))
+            )}
+
+            {loading && (
+              <div className="typing-indicator">
+                <span />
+                <span />
+                <span />
+                <small>AI is thinking...</small>
+              </div>
+            )}
+          </div>
+
+          {/* Text input only. There is deliberately no microphone here. */}
+          <form className="text-input-area" onSubmit={handleTextSubmit}>
+            <input
+              type="text"
+              value={message}
+              onChange={(event) => setMessage(event.target.value)}
+              placeholder="Type your message..."
+              disabled={loading}
+            />
+
+            <button
+              type="submit"
+              className="send-button"
+              disabled={!message.trim() || loading}
+            >
+              Send <span>➤</span>
+            </button>
+          </form>
+        </section>
       </main>
 
+      <footer className="app-footer">
+        Powered by Groq AI · HeyGen LiveAvatar
+      </footer>
     </div>
   )
 }
-
-export default App
